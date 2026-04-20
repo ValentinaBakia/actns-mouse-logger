@@ -45,8 +45,8 @@ class MainWindow(QMainWindow):
                 top=130.0,
                 width=760.0,
                 height=760.0,
-                target_size=84.0,
-                target_hit_size=124.0,
+                target_size=140.0,
+                target_hit_size=160.0,
             )
         )
         self._move_label = QLabel()

@@ -209,10 +209,13 @@ class DrawingCanvas(QWidget):
             painter.setPen(guide_pen)
             painter.drawLine(start_point, end_point)
 
-            start_fill = QColor("#fecaca")
-            start_border = QColor("#b91c1c")
-            end_fill = QColor("#bbf7d0")
-            end_border = QColor("#15803d")
+            start_fill = QColor("#bbf7d0")
+            start_border = QColor("#15803d")
+            end_fill = QColor("#fecaca")
+            end_border = QColor("#b91c1c")
+            if self._trial_state == self.FINISHED:
+                end_fill = QColor("#bbf7d0")
+                end_border = QColor("#15803d")
 
             self._draw_target(painter, start_point, start_fill, start_border)
             self._draw_target(painter, end_point, end_fill, end_border)
