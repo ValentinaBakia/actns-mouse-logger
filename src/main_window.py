@@ -25,13 +25,13 @@ from recorder import SessionRecorder
 # 4. react to canvas events
 # 5. forward logging events into the recorder
 class MainWindow(QMainWindow):
-    COMPLETION_FLASH_MS = 700
+    COMPLETION_FLASH_MS = 250
     RETRY_DELAY_MS = 400
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Mouse Logger")
-        self.resize(900, 650)
+        self.resize(1220, 980)
         self._current_move: DirectedMove | None = None
         self._session_started = False
         self._recorder = SessionRecorder()
@@ -41,11 +41,12 @@ class MainWindow(QMainWindow):
 
         self._canvas = DrawingCanvas(
             DrawingConfig(
-                left=180.0,
-                top=120.0,
-                width=500.0,
-                height=320.0,
-                anchor_radius=8.0,
+                left=190.0,
+                top=130.0,
+                width=760.0,
+                height=760.0,
+                target_size=84.0,
+                target_hit_size=124.0,
             )
         )
         self._move_label = QLabel()
