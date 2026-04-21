@@ -1,6 +1,5 @@
 import random
 import time
-from PySide6.QtGui import QGuiApplication
 from PySide6.QtGui import QGuiApplication, QShortcut, QKeySequence
 
 from PySide6.QtCore import QTimer, Qt
@@ -33,8 +32,6 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Mouse Logger")
-
-        # FIX DARK THEME
         self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
 
         # SHORTCUT: Allows you to quit the application by pressing "Esc"
@@ -76,7 +73,6 @@ class MainWindow(QMainWindow):
             )
         )
 
-        # FIX GEOMETRY
         self._canvas.setMinimumSize(100, 100)
         self.setMinimumSize(800, 600)
 
