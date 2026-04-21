@@ -120,7 +120,7 @@ class MainWindow(QMainWindow):
         # --- LAYOUT SESSION ---
         self._session_widget = QWidget()
         session_layout = QVBoxLayout()
-        session_layout.setContentsMargins(5, 5, 5, 5) 
+        session_layout.setContentsMargins(0, 5, 0, 0) 
         session_layout.addLayout(header_layout)
         session_layout.addWidget(self._canvas, stretch=1) 
         self._session_widget.setLayout(session_layout)
@@ -144,6 +144,7 @@ class MainWindow(QMainWindow):
         root_layout = QVBoxLayout()
         root_layout.addWidget(self._setup_widget)
         root_layout.addWidget(self._session_widget)
+        root_layout.setContentsMargins(0, 5, 0, 0) 
         container.setLayout(root_layout)
         self.setCentralWidget(container)
 
