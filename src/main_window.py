@@ -1,5 +1,7 @@
 import random
 import time
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QShortcut, QKeySequence
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
@@ -31,7 +33,20 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Mouse Logger")
-        self.resize(1220, 980)
+
+        # FIX DARK THEME
+        self.setStyleSheet("QMainWindow { background-color: #ffffff; }")
+
+        # SHORTCUT: Allows you to quit the application by pressing "Esc"
+        self._quit_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self._quit_shortcut.activated.connect(self.close)
+
+        #1. Get the screen size (now we use the entire available screen)
+        screen = QGuiApplication.primaryScreen()
+        screen_geom = screen.geometry()
+        win_w = screen_geom.width()
+        win_h = screen_geom.height()
+
         self._current_move: DirectedMove | None = None
         self._session_started = False
         self._recorder = SessionRecorder()
@@ -39,16 +54,33 @@ class MainWindow(QMainWindow):
         self._next_move_timer.setSingleShot(True)
         self._next_move_timer.timeout.connect(self._advance_session)
 
+        #2. 100% SCREEN-RELATED CALCULATIONS
+        header_offset = win_h * 0.08 
+        
+        canvas_area_w = win_w
+        canvas_area_h = win_h - header_offset
+
+        active_size = min(canvas_area_w, canvas_area_h) * 0.80
+
+        c_left = (canvas_area_w - active_size) / 2
+        c_top = (canvas_area_h - active_size) / 2
+
         self._canvas = DrawingCanvas(
             DrawingConfig(
-                left=190.0,
-                top=130.0,
-                width=760.0,
-                height=760.0,
-                target_size=140.0,
-                target_hit_size=160.0,
+                left=c_left,
+                top=c_top,
+                width=active_size,
+                height=active_size,
+                target_size=active_size * 0.23,     
+                target_hit_size=active_size * 0.27,
             )
         )
+
+        # FIX GEOMETRY
+        self._canvas.setMinimumSize(100, 100)
+        self.setMinimumSize(800, 600)
+
+        # --- Initialize Label and Input ---
         self._move_label = QLabel()
         self._move_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._move_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #0f172a;")
@@ -61,40 +93,53 @@ class MainWindow(QMainWindow):
 
         self._subject_label = QLabel("Subject name")
         self._subject_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
         self._subject_input = QLineEdit()
         self._subject_input.setPlaceholderText("Enter subject name")
+        self._subject_input.setStyleSheet("padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: white; color: black;")
         self._subject_input.returnPressed.connect(self._start_session)
+        
         self._start_button = QPushButton("Start Session")
+        self._start_button.setStyleSheet("padding: 8px; font-weight: bold;")
         self._start_button.clicked.connect(self._start_session)
 
+        # --- Event Connections ---
         self._canvas.state_changed.connect(self._update_state_text)
         self._canvas.trial_started.connect(self._handle_trial_started)
         self._canvas.sample_recorded.connect(self._handle_sample_recorded)
         self._canvas.trial_finished.connect(self._handle_trial_finished)
         self._canvas.trial_cancelled.connect(self._handle_trial_cancelled)
 
+        # --- LAYOUT HEADER ---
         header_layout = QHBoxLayout()
         header_layout.addWidget(self._move_label, stretch=1)
         header_layout.addWidget(self._state_label, stretch=1)
         header_layout.addWidget(self._recording_label, stretch=1)
         header_layout.addWidget(self._session_label, stretch=1)
 
+        # --- LAYOUT SESSION ---
         self._session_widget = QWidget()
         session_layout = QVBoxLayout()
+        session_layout.setContentsMargins(5, 5, 5, 5) 
         session_layout.addLayout(header_layout)
-        session_layout.addWidget(self._canvas, stretch=1)
+        session_layout.addWidget(self._canvas, stretch=1) 
         self._session_widget.setLayout(session_layout)
         self._session_widget.hide()
 
+        # --- LAYOUT SETUP (Initial Screen) ---
+        setup_inner_container = QWidget()
+        setup_inner_container.setFixedWidth(400) 
+        setup_inner_layout = QVBoxLayout(setup_inner_container)
+        setup_inner_layout.addWidget(self._subject_label)
+        setup_inner_layout.addWidget(self._subject_input)
+        setup_inner_layout.addWidget(self._start_button)
+
         self._setup_widget = QWidget()
         setup_layout = QVBoxLayout()
-        setup_layout.addStretch(1)
-        setup_layout.addWidget(self._subject_label)
-        setup_layout.addWidget(self._subject_input)
-        setup_layout.addWidget(self._start_button)
-        setup_layout.addStretch(1)
+        setup_layout.addWidget(setup_inner_container, alignment=Qt.AlignmentFlag.AlignCenter)
         self._setup_widget.setLayout(setup_layout)
 
+        # --- ROOT LAYOUT ---
         container = QWidget()
         root_layout = QVBoxLayout()
         root_layout.addWidget(self._setup_widget)
@@ -104,6 +149,9 @@ class MainWindow(QMainWindow):
 
         self._update_session_text()
         self._update_state_text("waiting")
+
+        #3. OPENING THE WINDOW IN ABSOLUTE FULL SCREEN
+        self.showFullScreen()
 
     def load_next_trial(self) -> None:
         self._next_move_timer.stop()
