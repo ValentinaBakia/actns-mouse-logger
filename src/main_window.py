@@ -49,6 +49,7 @@ class MainWindow(QMainWindow):
 
         self._current_move: DirectedMove | None = None
         self._session_started = False
+        self._pending_moves: list[DirectedMove] = []
         self._recorder = SessionRecorder()
         self._next_move_timer = QTimer(self)
         self._next_move_timer.setSingleShot(True)
@@ -158,7 +159,15 @@ class MainWindow(QMainWindow):
         self._next_move_timer.stop()
         if not self._session_started:
             return
-        move = random.choice(DIRECTED_MOVES)
+
+        # If is empty, we fill it with all the moves and shuffle it
+        if not self._pending_moves:
+            self._pending_moves = list(DIRECTED_MOVES)
+            random.shuffle(self._pending_moves)
+
+        # We draw the last movement from the deck (pop() also removes it from the list)
+        move = self._pending_moves.pop()
+        
         self._set_current_move(move)
 
     def _set_current_move(self, move: DirectedMove) -> None:
