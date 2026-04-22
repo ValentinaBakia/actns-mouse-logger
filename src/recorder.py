@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 import re
 
+# --- Nuove importazioni per l'Audio ---
+from PySide6.QtCore import QUrl
+from PySide6.QtMultimedia import QAudioInput, QMediaCaptureSession, QMediaRecorder
+# -------------------------------------
+
 from movements import DirectedMove
 
 
@@ -74,17 +79,48 @@ def build_session_id(subject_name: str, started_at: datetime) -> str:
 class SessionRecorder:
     def __init__(self) -> None:
         self.session_data: dict[str, object] | None = None
-        self.output_dir = Path("output")
+        
+        # FIX CARTELLA: Calcoliamo il percorso ASSOLUTO basandoci su dove si trova questo script
+        # __file__ è il percorso di recorder.py, parent è la cartella che lo contiene.
+        base_dir = Path(__file__).parent.parent.resolve()
+        self.output_dir = base_dir / "output" 
+        
         self._active_trial: ActiveTrial | None = None
         self._next_trial_id = 1
+        
+        # --- Configurazione Audio Integrata ---
+        self._capture_session = QMediaCaptureSession()
+        self._audio_input = QAudioInput()
+        self._capture_session.setAudioInput(self._audio_input)
+        
+        self._audio_recorder = QMediaRecorder()
+        self._capture_session.setRecorder(self._audio_recorder)
 
     def start_session(self, subject_id: str, start_timestamp: float | None = None) -> dict[str, object]:
         # A session is the top-level container persisted to JSON.
         started_at = datetime.fromtimestamp(start_timestamp or datetime.now().timestamp())
+        session_id = build_session_id(subject_id, started_at)
+        
+        # Creiamo la cartella fisica in modo sicuro
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # --- Avvio Registrazione Audio ---
+        audio_filename = f"{session_id}.wav"
+        audio_filepath = self.output_dir / audio_filename
+        
+        # Passiamo a Qt il percorso ASSOLUTO in formato stringa
+        self._audio_recorder.setOutputLocation(QUrl.fromLocalFile(str(audio_filepath)))
+        self._audio_recorder.record()
+        
+        audio_start_timestamp = datetime.now().timestamp()
+        # ---------------------------------
+
         self.session_data = {
-            "session_id": build_session_id(subject_id, started_at),
+            "session_id": session_id,
             "subject_id": subject_id,
             "session_start_timestamp": started_at.timestamp(),
+            "audio_file": audio_filename,
+            "audio_start_timestamp": audio_start_timestamp,
             "session_end_timestamp": None,
             "trials": [],
         }
@@ -96,6 +132,12 @@ class SessionRecorder:
     def finish_session(self, end_timestamp: float) -> None:
         if self.session_data is None:
             return
+            
+        # --- Stop Registrazione Audio ---
+        if self._audio_recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+            self._audio_recorder.stop()
+        # --------------------------------
+            
         self.session_data["session_end_timestamp"] = end_timestamp
         self._write_session_json()
 
@@ -148,7 +190,8 @@ class SessionRecorder:
     def _write_session_json(self) -> None:
         if self.session_data is None:
             return
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Assicuriamoci che la cartella esista sempre prima di scrivere il JSON
+        self.output_dir.mkdir(parents=True, exist_ok=True) 
         file_path = self.session_file_path()
         if file_path is None:
             return
