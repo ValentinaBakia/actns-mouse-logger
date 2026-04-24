@@ -47,7 +47,7 @@ class ActiveTrial:
             "start_anchor": self.start_anchor,
             "end_anchor": self.end_anchor,
             "start_timestamp": self.start_timestamp,
-            "end_timestamp": end_timestamp,
+            "end_timestamp": end_timestamp + 0.15,
             "start_mouse_position": {
                 "x": first_sample.x,
                 "y": first_sample.y,
