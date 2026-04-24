@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 from canvas import DrawingCanvas, DrawingConfig
 from movements import DIRECTED_MOVES, DirectedMove
 from recorder import SessionRecorder
-
+from collections import defaultdict
 
 # Main application window.
 # This file owns the high-level app flow:
@@ -156,16 +156,47 @@ class MainWindow(QMainWindow):
         if not self._session_started:
             return
 
-        # If is empty, we fill it with all the moves and shuffle it
+        
         if not self._pending_moves:
-            self._pending_moves = list(DIRECTED_MOVES)
-            random.shuffle(self._pending_moves)
+            # Generate a new Eulerian Cycle
+            if self._current_move:
+                # If we're in the middle of a session, we start from where the last movement ended.
+                start_node = self._current_move.end_anchor
+            else:
+                # If it's the very first movement ever, we choose a node at random
+                start_node = random.choice(DIRECTED_MOVES).start_anchor
+                
+            self._pending_moves = self._generate_eulerian_circuit(start_node)
 
-        # We draw the last movement from the deck (pop() also removes it from the list)
         move = self._pending_moves.pop()
         
         self._set_current_move(move)
 
+    def _generate_eulerian_circuit(self, start_node: str) -> list[DirectedMove]:
+        # 1. Create the "Graph Adjacency List"
+        # Dictionary that maps: Starting Node -> List of Possible Moves
+        adj = defaultdict(list)
+        for move in DIRECTED_MOVES:
+            adj[move.start_anchor].append(move)
+
+        # 2. We shuffle the edges exiting each node.
+        # This ensures that the generated Eulerian path is always random!
+        for node in adj:
+            random.shuffle(adj[node])
+
+        circuit_edges = []
+
+        #3. Hierholzer Algorithm via Depth-First Search (DFS)
+        def euler_dfs(u: str):
+            while adj[u]:
+                edge = adj[u].pop()
+                euler_dfs(edge.end_anchor)
+                circuit_edges.append(edge)
+
+        euler_dfs(start_node)
+        
+        return circuit_edges
+        
     def _set_current_move(self, move: DirectedMove) -> None:
         self._current_move = move
         self._move_label.setText(f"Move {move.label}")
