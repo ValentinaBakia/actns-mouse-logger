@@ -57,7 +57,8 @@ class MainWindow(QMainWindow):
         canvas_area_h = float(win_h)
         # Keep the task area almost edge-to-edge, but leave a tiny safety
         # margin so the corner squares stay fully visible.
-        edge_inset = max(4.0, min(canvas_area_w, canvas_area_h) * 0.004)
+        #edge_inset = max(4.0, min(canvas_area_w, canvas_area_h) * 0.004)
+        edge_inset = 0.0
 
         self._canvas = DrawingCanvas(
             DrawingConfig(

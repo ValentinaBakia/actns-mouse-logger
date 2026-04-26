@@ -2,11 +2,13 @@ from dataclasses import dataclass
 import math
 import time
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QCursor
 from PySide6.QtWidgets import QWidget
 
 from movements import DirectedMove
+
+import ctypes
 
 
 # Canvas layer for interaction and visual guidance.
@@ -22,9 +24,9 @@ class DrawingConfig:
     height: float = 760.0
     # These values make the corner targets scale with screen/canvas size
     # while staying within a visually stable min/max range.
-    target_size_ratio: float = 0.055
-    target_min_size: float = 42.0
-    target_max_size: float = 70.0
+    target_size_ratio: float = 0.08  # Prima era 0.055
+    target_min_size: float = 70.0    # Prima era 42.0
+    target_max_size: float = 130.0   # Prima era 70.0
     # The hitbox stays larger than the visible square so users can move
     # naturally without needing pixel-perfect precision.
     target_hit_scale: float = 1.8
@@ -136,6 +138,53 @@ class DrawingCanvas(QWidget):
         if end_state == self.FINISHED:
             self.trial_finished.emit(time.time())
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Aspettiamo 200 millisecondi che la transizione al FullScreen sia FINITA,
+        # altrimenti Windows ci cancella la gabbia all'istante.
+        QTimer.singleShot(200, self._apply_cage)
+
+    def _apply_cage(self) -> None:
+        try:
+            import ctypes
+            
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", ctypes.c_long),
+                    ("top", ctypes.c_long),
+                    ("right", ctypes.c_long),
+                    ("bottom", ctypes.c_long)
+                ]
+            
+            # Prendiamo le informazioni sullo schermo da Qt
+            screen = self.screen()
+            geom = screen.geometry()
+            
+            # devicePixelRatio legge lo zoom di Windows (es. 1.25, 1.5, ecc.)
+            ratio = screen.devicePixelRatio() 
+            
+            # Calcoliamo i pixel FISICI REALI moltiplicando le dimensioni per lo zoom
+            left = int(geom.left() * ratio)
+            top = int(geom.top() * ratio)
+            right = int(geom.right() * ratio) - 1
+            bottom = int(geom.bottom() * ratio) - 1
+            
+            rect = RECT(left, top, right, bottom)
+            
+            # Applichiamo la gabbia definitiva
+            ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
+        except Exception:
+            pass
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        # Quando l'app si chiude, ridiamo la libertà al mouse
+        try:
+            import ctypes
+            ctypes.windll.user32.ClipCursor(None)
+        except Exception:
+            pass
+
     def _target_rect(
         self,
         anchor_name: str,
@@ -154,11 +203,18 @@ class DrawingCanvas(QWidget):
 
     def _activation_zone_rect(self, anchor_name: str, rect: QRectF | None = None) -> QRectF:
         rect = rect or self._active_rect()
-        visible_size = self._config.target_size_for_rect(rect)
-        # The invisible activation zone is intentionally larger than the drawn
-        # square so the experiment feels guided, but not overly precise.
-        hit_size = max(visible_size * self._config.target_hit_scale, visible_size + 22.0)
-        return self._target_rect(anchor_name, hit_size, rect)
+        base_size = self._config.target_size_for_rect(rect)
+        hit_size = base_size * 2.6
+        base_rect = self._target_rect(anchor_name, hit_size, rect)
+        margin = 500.0
+        if anchor_name == "TL":
+            return base_rect.adjusted(-margin, -margin, 0, 0)
+        elif anchor_name == "TR":
+            return base_rect.adjusted(0, -margin, margin, 0)
+        elif anchor_name == "BL":
+            return base_rect.adjusted(-margin, 0, 0, margin)
+        else: # "BR"
+            return base_rect.adjusted(0, 0, margin, margin)
 
     def _corner_hit(self, position: QPointF) -> str | None:
         active_rect = self._active_rect()
@@ -195,15 +251,23 @@ class DrawingCanvas(QWidget):
         timestamp = time.time()
         # During ACTIVE, every mouse move produces one logged sample.
         self.sample_recorded.emit(timestamp, position.x(), position.y())
+        
         if hit_anchor == self._current_move.end_anchor:
-            self._end_active_trial(self.FINISHED)
+            elapsed_time = timestamp - getattr(self, "_active_trial_start_time", timestamp)
+            
+            if elapsed_time > 4.0:
+                self.trial_cancelled.emit()
+                self._end_active_trial(self.INVALID)
+            else:
+                self._end_active_trial(self.FINISHED)
+                
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         super().leaveEvent(event)
-        if self._trial_state == self.ACTIVE:
-            self.trial_cancelled.emit()
-            self._end_active_trial(self.INCOMPLETE)
+        #if self._trial_state == self.ACTIVE:
+        #    self.trial_cancelled.emit()
+        #    self._end_active_trial(self.INCOMPLETE)
 
     def _draw_target(
         self,
@@ -211,16 +275,59 @@ class DrawingCanvas(QWidget):
         anchor_name: str,
         color: QColor,
     ) -> None:
+        # 1. Capiamo se l'angolo che stiamo valutando ORA è coinvolto nella mossa
+        is_active_target = False
+        if self._current_move:
+            if anchor_name == self._current_move.start_anchor or anchor_name == self._current_move.end_anchor:
+                is_active_target = True
+
+        # Se non è il punto di partenza né quello di arrivo, usciamo subito:
+        # in questo modo non viene disegnato assolutamente nulla.
+        if not is_active_target:
+            return
+
         active_rect = self._active_rect()
-        # Visible targets are intentionally simple: solid sharp-edged squares.
-        target_rect = self._target_rect(
-            anchor_name,
-            self._config.target_size_for_rect(active_rect),
-            active_rect,
-        )
+        arm_length = self._config.target_size_for_rect(active_rect) * 2.5 
+        thickness = 75.0 
+
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(color)
-        painter.drawRect(target_rect)
+
+        # 2. Determiniamo il tipo di movimento della mossa corrente
+        move_type = "diagonal"
+        if self._current_move:
+            start = self._current_move.start_anchor
+            end = self._current_move.end_anchor
+            if start[0] == end[0]:
+                move_type = "horizontal"
+            elif start[1] == end[1]:
+                move_type = "vertical"
+
+        # 3. Definiamo i due rettangoli per il corner corrente
+        rect_horizontal = None
+        rect_vertical = None
+
+        if anchor_name == "TL":
+            rect_horizontal = QRectF(active_rect.left(), active_rect.top(), arm_length, thickness)
+            rect_vertical = QRectF(active_rect.left(), active_rect.top(), thickness, arm_length)
+        elif anchor_name == "TR":
+            rect_horizontal = QRectF(active_rect.right() - arm_length, active_rect.top(), arm_length, thickness)
+            rect_vertical = QRectF(active_rect.right() - thickness, active_rect.top(), thickness, arm_length)
+        elif anchor_name == "BL":
+            rect_horizontal = QRectF(active_rect.left(), active_rect.bottom() - thickness, arm_length, thickness)
+            rect_vertical = QRectF(active_rect.left(), active_rect.bottom() - arm_length, thickness, arm_length)
+        elif anchor_name == "BR":
+            rect_horizontal = QRectF(active_rect.right() - arm_length, active_rect.bottom() - thickness, arm_length, thickness)
+            rect_vertical = QRectF(active_rect.right() - thickness, active_rect.bottom() - arm_length, thickness, arm_length)
+
+        # 4. Disegniamo la forma in base al tipo di mossa
+        if move_type == "diagonal":
+            painter.drawRect(rect_horizontal)
+            painter.drawRect(rect_vertical)
+        elif move_type == "horizontal":
+            painter.drawRect(rect_vertical)
+        elif move_type == "vertical":
+            painter.drawRect(rect_horizontal)
 
     def _draw_reference_diagonals(self, painter: QPainter) -> None:
         # Keep the old diagonal guidance, but in a very light style so it does
@@ -234,12 +341,16 @@ class DrawingCanvas(QWidget):
     def _label_rect(self, anchor_name: str) -> tuple[QRectF, Qt.AlignmentFlag]:
         rect = self._active_rect()
         target_size = self._config.target_size_for_rect(rect)
-        # Labels are positioned relative to target size so they stay readable
-        # without drifting too far away on large or small screens.
+        
+        # Adattiamo la posizione delle etichette per evitare che si 
+        # sovrappongano ai nuovi angoli ingranditi
+        arm_length = target_size * 2.5
         width = max(84.0, target_size * 1.7)
         height = 22.0
-        inset_x = target_size + 14.0
-        inset_y = 12.0
+        
+        # Spingiamo le etichette leggermente più all'interno
+        inset_x = arm_length + 10.0
+        inset_y = arm_length * 0.5
 
         if anchor_name == "TL":
             return QRectF(rect.left() + inset_x, rect.top() + inset_y, width, height), Qt.AlignmentFlag.AlignLeft
@@ -248,6 +359,7 @@ class DrawingCanvas(QWidget):
         if anchor_name == "BL":
             return QRectF(rect.left() + inset_x, rect.bottom() - height - inset_y, width, height), Qt.AlignmentFlag.AlignLeft
         return QRectF(rect.right() - width - inset_x, rect.bottom() - height - inset_y, width, height), Qt.AlignmentFlag.AlignRight
+
 
     def _draw_direction_arrow(self, painter: QPainter) -> None:
         if self._current_move is None:
