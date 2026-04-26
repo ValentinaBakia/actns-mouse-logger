@@ -84,6 +84,10 @@ class MainWindow(QMainWindow):
         self._recording_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._session_label = QLabel()
         self._session_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._stop_button = QPushButton("STOP")
+        self._stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._stop_button.setStyleSheet(self._badge_button_style("#dc2626", "#ffffff"))
+        self._stop_button.clicked.connect(self._stop_session)
 
         self._subject_label = QLabel("Subject name")
         self._subject_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -93,8 +97,26 @@ class MainWindow(QMainWindow):
         self._subject_input.setStyleSheet("padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; background: white; color: black;")
         self._subject_input.returnPressed.connect(self._start_session)
         
-        self._start_button = QPushButton("Start Session")
-        self._start_button.setStyleSheet("padding: 8px; font-weight: bold;")
+        self._start_button = QPushButton("GO")
+        self._start_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._start_button.setStyleSheet(
+            "QPushButton {"
+            "min-width: 110px;"
+            "padding: 8px 16px;"
+            "font-weight: 700;"
+            "border: 1px solid #0f172a;"
+            "border-radius: 6px;"
+            "background-color: #0f172a;"
+            "color: #ffffff;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #1e293b;"
+            "}"
+            "QPushButton:pressed {"
+            "background-color: #334155;"
+            "}"
+        )
+        self._start_button.setFixedHeight(self._subject_input.sizeHint().height())
         self._start_button.clicked.connect(self._start_session)
 
         # --- Event Connections ---
@@ -106,12 +128,9 @@ class MainWindow(QMainWindow):
 
         # --- LAYOUT HEADER ---
         status_block = QWidget()
-        # Make the floating status overlay ignore mouse events so it never
-        # blocks movement near the top of the screen.
-        status_block.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         status_block.setStyleSheet("background: transparent;")
-        status_block_layout = QVBoxLayout()
-        status_block_layout.setContentsMargins(0, 10, 0, 0)
+        status_block_layout = QVBoxLayout(status_block)
+        status_block_layout.setContentsMargins(0, 10, 0, 8)
         status_block_layout.setSpacing(4)
         status_block_layout.addWidget(self._move_label)
 
@@ -121,16 +140,15 @@ class MainWindow(QMainWindow):
         badges_layout.addWidget(self._state_label)
         badges_layout.addWidget(self._recording_label)
         badges_layout.addWidget(self._session_label)
+        badges_layout.addWidget(self._stop_button)
         status_block_layout.addLayout(badges_layout)
-        status_block.setLayout(status_block_layout)
 
         # --- LAYOUT SESSION ---
         self._session_widget = QWidget()
+        self._session_widget.setStyleSheet("background: #f7f5ef;")
         session_layout = QGridLayout()
         session_layout.setContentsMargins(0, 0, 0, 0)
         session_layout.setSpacing(0)
-        # The status block is layered on top of the canvas instead of taking up
-        # its own row, so the movement area can use the full screen height.
         session_layout.addWidget(self._canvas, 0, 0)
         session_layout.addWidget(
             status_block,
@@ -145,11 +163,15 @@ class MainWindow(QMainWindow):
         setup_inner_container = QWidget()
         # Keep the setup step narrow and centered so the session screen can
         # remain visually simple once data collection starts.
-        setup_inner_container.setFixedWidth(400) 
+        setup_inner_container.setFixedWidth(520)
         setup_inner_layout = QVBoxLayout(setup_inner_container)
+        setup_input_row = QHBoxLayout()
+        setup_input_row.setContentsMargins(0, 0, 0, 0)
+        setup_input_row.setSpacing(8)
+        setup_input_row.addWidget(self._subject_input, 1)
+        setup_input_row.addWidget(self._start_button)
         setup_inner_layout.addWidget(self._subject_label)
-        setup_inner_layout.addWidget(self._subject_input)
-        setup_inner_layout.addWidget(self._start_button)
+        setup_inner_layout.addLayout(setup_input_row)
 
         self._setup_widget = QWidget()
         setup_layout = QVBoxLayout()
@@ -218,11 +240,11 @@ class MainWindow(QMainWindow):
         
         return circuit_edges
         
-    def _set_current_move(self, move: DirectedMove) -> None:
+    def _set_current_move(self, move: DirectedMove | None) -> None:
         self._current_move = move
         # The move label was simplified to the raw direction so participants
         # see only the essential cue, without extra wording.
-        self._move_label.setText(f"{move.label}")
+        self._move_label.setText("" if move is None else move.label)
         self._canvas.set_current_move(move)
 
     def _start_session(self) -> None:
@@ -231,12 +253,31 @@ class MainWindow(QMainWindow):
             self._subject_input.setFocus()
             return
 
+        self._pending_moves.clear()
+        self._set_current_move(None)
         self._recorder.start_session(subject_id=subject_name, start_timestamp=time.time())
         self._session_started = True
         self._setup_widget.hide()
         self._session_widget.show()
         self._update_session_text()
         self.load_next_trial()
+
+    def _stop_session(self) -> None:
+        if not self._session_started:
+            return
+
+        self._next_move_timer.stop()
+        self._pending_moves.clear()
+        self._session_started = False
+        self._set_current_move(None)
+        self._recorder.finish_session(time.time())
+        self._session_label.setText("Recorded 0")
+        self._session_label.setStyleSheet(self._badge_style("#ecfccb", "#3f6212"))
+        self._sync_stop_button_size()
+        self._setup_widget.show()
+        self._session_widget.hide()
+        self._subject_input.clear()
+        self._subject_input.setFocus()
 
     def _handle_trial_started(self, move: DirectedMove, timestamp: float) -> None:
         # Event-based logging bridge: the canvas emits lifecycle signals and
@@ -285,6 +326,7 @@ class MainWindow(QMainWindow):
             assert isinstance(trials, list)
             self._session_label.setText(f"Recorded {len(trials)}")
         self._session_label.setStyleSheet(self._badge_style("#ecfccb", "#3f6212"))
+        self._sync_stop_button_size()
 
     @staticmethod
     def _badge_style(background: str, foreground: str) -> str:
@@ -298,6 +340,31 @@ class MainWindow(QMainWindow):
             f"background-color: {background};"
             f"color: {foreground};"
         )
+
+    @staticmethod
+    def _badge_button_style(background: str, foreground: str) -> str:
+        return (
+            "QPushButton {"
+            "font-size: 11px;"
+            "font-weight: 600;"
+            "padding: 4px 8px;"
+            "border: none;"
+            "border-radius: 999px;"
+            f"background-color: {background};"
+            f"color: {foreground};"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #b91c1c;"
+            "}"
+            "QPushButton:pressed {"
+            "background-color: #991b1b;"
+            "}"
+        )
+
+    def _sync_stop_button_size(self) -> None:
+        badge_size = self._session_label.sizeHint()
+        self._stop_button.setFixedWidth(max(56, badge_size.width()))
+        self._stop_button.setFixedHeight(max(24, badge_size.height()))
 
     def _state_presentation(self, state: str) -> tuple[str, str, str, str]:
         if state == "active":
