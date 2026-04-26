@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import re
 from PySide6.QtCore import QUrl
-from PySide6.QtMultimedia import QAudioInput, QMediaCaptureSession, QMediaRecorder
+from PySide6.QtMultimedia import QAudioInput, QMediaCaptureSession, QMediaFormat, QMediaRecorder
 
 from movements import DirectedMove
 
@@ -90,6 +90,8 @@ class SessionRecorder:
         self._audio_recorder = QMediaRecorder()
         self._capture_session.setRecorder(self._audio_recorder)
 
+        self._audio_extension = self._configure_audio_recording()
+    
     def start_session(self, subject_id: str, start_timestamp: float | None = None) -> dict[str, object]:
         # A session is the top-level container persisted to JSON.
         started_at = datetime.fromtimestamp(start_timestamp or datetime.now().timestamp())
@@ -97,7 +99,7 @@ class SessionRecorder:
         
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        audio_filename = f"{session_id}.wav"
+        audio_filename = f"{session_id}.{self._audio_extension}"
         audio_filepath = self.output_dir / audio_filename
 
         self._audio_recorder.setOutputLocation(QUrl.fromLocalFile(str(audio_filepath)))
@@ -184,3 +186,24 @@ class SessionRecorder:
         if file_path is None:
             return
         file_path.write_text(json.dumps(self.session_data, indent=2), encoding="utf-8")
+
+    def _configure_audio_recording(self) -> str:
+        # 1. First try real WAV
+        wav_format = QMediaFormat()
+        wav_format.setFileFormat(QMediaFormat.FileFormat.Wave)
+
+        if wav_format.isSupported(QMediaFormat.ConversionMode.Encode):
+            self._audio_recorder.setMediaFormat(wav_format)
+            return "wav"
+
+        # 2. Fallback to MP4 if WAV is not supported
+        mp4_format = QMediaFormat()
+        mp4_format.setFileFormat(QMediaFormat.FileFormat.MPEG4)
+
+        if mp4_format.isSupported(QMediaFormat.ConversionMode.Encode):
+            self._audio_recorder.setMediaFormat(mp4_format)
+            return "mp4"
+
+        # 3. Last fallback: let Qt choose anything supported
+        self._audio_recorder.setMediaFormat(QMediaFormat())
+        return "audio"
