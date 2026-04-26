@@ -3,8 +3,14 @@ from datetime import datetime
 import json
 from pathlib import Path
 import re
-from PySide6.QtCore import QUrl
-from PySide6.QtMultimedia import QAudioInput, QMediaCaptureSession, QMediaFormat, QMediaRecorder
+from PySide6.QtCore import QCoreApplication, QMicrophonePermission, QObject, QTimer, Qt, QUrl, Signal
+from PySide6.QtMultimedia import (
+    QAudioInput,
+    QMediaCaptureSession,
+    QMediaDevices,
+    QMediaFormat,
+    QMediaRecorder,
+)
 
 from movements import DirectedMove
 
@@ -73,62 +79,97 @@ def build_session_id(subject_name: str, started_at: datetime) -> str:
     return f"session_{safe_subject}_{started_at:%Y-%m-%d_%H-%M-%S}"
 
 
-class SessionRecorder:
+class SessionRecorder(QObject):
+    audio_status_changed = Signal(str, str)
+
     def __init__(self) -> None:
+        super().__init__()
         self.session_data: dict[str, object] | None = None
-        
+
         base_dir = Path(__file__).parent.parent.resolve()
-        self.output_dir = base_dir / "output" 
-        
+        self.output_dir = base_dir / "output"
+
         self._active_trial: ActiveTrial | None = None
         self._next_trial_id = 1
-        
+        self._session_active = False
+        self._audio_status = "idle"
+        self._audio_status_message = ""
+        self._audio_start_attempt = 0
+        self._pending_audio_filename: str | None = None
+        self._pending_audio_filepath: Path | None = None
+
         self._capture_session = QMediaCaptureSession()
         self._audio_input = QAudioInput()
         self._capture_session.setAudioInput(self._audio_input)
-        
+
         self._audio_recorder = QMediaRecorder()
         self._capture_session.setRecorder(self._audio_recorder)
+        self._media_devices = QMediaDevices()
+
+        self._audio_recorder.errorOccurred.connect(self._handle_audio_error)
+        self._audio_recorder.recorderStateChanged.connect(self._handle_recorder_state_changed)
+        self._media_devices.audioInputsChanged.connect(self._handle_audio_inputs_changed)
 
         self._audio_extension = self._configure_audio_recording()
-    
+
+    @property
+    def audio_status(self) -> str:
+        return self._audio_status
+
+    @property
+    def audio_status_message(self) -> str:
+        return self._audio_status_message
+
     def start_session(self, subject_id: str, start_timestamp: float | None = None) -> dict[str, object]:
         # A session is the top-level container persisted to JSON.
         started_at = datetime.fromtimestamp(start_timestamp or datetime.now().timestamp())
         session_id = build_session_id(subject_id, started_at)
-        
+
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         audio_filename = f"{session_id}.{self._audio_extension}"
         audio_filepath = self.output_dir / audio_filename
 
-        self._audio_recorder.setOutputLocation(QUrl.fromLocalFile(str(audio_filepath)))
-        self._audio_recorder.record()
-        
-        audio_start_timestamp = datetime.now().timestamp()
-        # ---------------------------------
+        self._session_active = True
+        self._active_trial = None
+        self._next_trial_id = 1
+        self._pending_audio_filename = audio_filename
+        self._pending_audio_filepath = audio_filepath
 
         self.session_data = {
             "session_id": session_id,
             "subject_id": subject_id,
             "session_start_timestamp": started_at.timestamp(),
-            "audio_file": audio_filename,
-            "audio_start_timestamp": audio_start_timestamp,
+            "audio_file": None,
+            "audio_start_timestamp": None,
+            "audio_status": "starting",
+            "audio_status_detail": None,
             "session_end_timestamp": None,
             "trials": [],
         }
-        self._active_trial = None
-        self._next_trial_id = 1
+
+        self._set_audio_status("starting", "")
+        permission_status = self._microphone_permission_status()
+        if permission_status == Qt.PermissionStatus.Denied:
+            self._set_audio_status(
+                "warning",
+                "Microphone permission is turned off in system settings. Enable it for this app to record audio.",
+            )
+        elif permission_status == Qt.PermissionStatus.Undetermined:
+            self._request_microphone_permission()
+        else:
+            self._begin_audio_recording()
         self._write_session_json()
         return self.session_data
 
     def finish_session(self, end_timestamp: float) -> None:
         if self.session_data is None:
             return
-            
+
+        self._session_active = False
         if self._audio_recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
             self._audio_recorder.stop()
-            
+
         self.session_data["session_end_timestamp"] = end_timestamp
         self._write_session_json()
 
@@ -181,11 +222,127 @@ class SessionRecorder:
     def _write_session_json(self) -> None:
         if self.session_data is None:
             return
-        self.output_dir.mkdir(parents=True, exist_ok=True) 
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         file_path = self.session_file_path()
         if file_path is None:
             return
         file_path.write_text(json.dumps(self.session_data, indent=2), encoding="utf-8")
+
+    def _set_audio_status(self, status: str, message: str) -> None:
+        if status == self._audio_status and message == self._audio_status_message:
+            return
+
+        self._audio_status = status
+        self._audio_status_message = message
+
+        if self.session_data is not None:
+            self.session_data["audio_status"] = status
+            self.session_data["audio_status_detail"] = message or None
+            self._write_session_json()
+
+        self.audio_status_changed.emit(status, message)
+
+    def _microphone_permission_status(self) -> Qt.PermissionStatus | None:
+        app = QCoreApplication.instance()
+        if app is None:
+            return None
+        return app.checkPermission(QMicrophonePermission())
+
+    def _request_microphone_permission(self) -> None:
+        app = QCoreApplication.instance()
+        if app is None:
+            self._set_audio_status(
+                "warning",
+                "Audio recording unavailable. The app could not check microphone permission.",
+            )
+            return
+        app.requestPermission(QMicrophonePermission(), self, self._handle_microphone_permission_result)
+
+    def _handle_microphone_permission_result(self, *_args: object) -> None:
+        if not self._session_active or self.session_data is None:
+            return
+
+        permission_status = self._microphone_permission_status()
+        if permission_status == Qt.PermissionStatus.Granted:
+            self._begin_audio_recording()
+            return
+
+        if permission_status == Qt.PermissionStatus.Denied:
+            self._set_audio_status(
+                "warning",
+                "Microphone permission is turned off in system settings. Enable it for this app to record audio.",
+            )
+            return
+
+        self._set_audio_status(
+            "warning",
+            "Audio recording unavailable. Microphone permission was not granted.",
+        )
+
+    def _begin_audio_recording(self) -> None:
+        if self.session_data is None or self._pending_audio_filename is None or self._pending_audio_filepath is None:
+            return
+        if not self._warn_if_audio_input_missing():
+            return
+
+        self.session_data["audio_file"] = self._pending_audio_filename
+        self.session_data["audio_start_timestamp"] = datetime.now().timestamp()
+        self._audio_recorder.setOutputLocation(QUrl.fromLocalFile(str(self._pending_audio_filepath)))
+        self._set_audio_status("starting", "")
+        self._audio_recorder.record()
+        self._audio_start_attempt += 1
+        attempt_id = self._audio_start_attempt
+        QTimer.singleShot(400, lambda: self._verify_audio_recording_started(attempt_id))
+
+    def _warn_if_audio_input_missing(self) -> None:
+        if QMediaDevices.audioInputs():
+            return True
+        self._set_audio_status(
+            "warning",
+            "Audio recording unavailable. No microphone input device is available.",
+        )
+        return False
+
+    def _verify_audio_recording_started(self, attempt_id: int) -> None:
+        if not self._session_active or attempt_id != self._audio_start_attempt:
+            return
+        if self._audio_recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+            return
+        if self._audio_status == "warning":
+            return
+
+        error_message = self._audio_recorder.errorString().strip()
+        message = error_message or (
+            "Audio recording did not start. Check microphone permissions or the selected input device."
+        )
+        self._set_audio_status("warning", message)
+
+    def _handle_audio_error(self, error: QMediaRecorder.Error, error_string: str) -> None:
+        if error == QMediaRecorder.Error.NoError or not self._session_active:
+            return
+
+        message = error_string.strip() or (
+            "Audio recording failed. Check microphone permissions or the selected input device."
+        )
+        self._set_audio_status("warning", message)
+
+    def _handle_recorder_state_changed(self, state: QMediaRecorder.RecorderState) -> None:
+        if not self._session_active:
+            return
+        if state == QMediaRecorder.RecorderState.RecordingState:
+            self._set_audio_status("ok", "")
+
+    def _handle_audio_inputs_changed(self) -> None:
+        if not self._session_active:
+            return
+        if not QMediaDevices.audioInputs():
+            self._set_audio_status(
+                "warning",
+                "Audio recording unavailable. No microphone input device is available.",
+            )
+            return
+        if self._audio_recorder.recorderState() == QMediaRecorder.RecorderState.RecordingState:
+            self._set_audio_status("ok", "")
 
     def _configure_audio_recording(self) -> str:
         # 1. First try real WAV

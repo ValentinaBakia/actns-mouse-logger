@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
 
         self._current_move: DirectedMove | None = None
         self._session_started = False
+        self._audio_ready_for_moves = False
         self._pending_moves: list[DirectedMove] = []
         self._recorder = SessionRecorder()
         self._next_move_timer = QTimer(self)
@@ -78,6 +79,11 @@ class MainWindow(QMainWindow):
         self._move_label = QLabel()
         self._move_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._move_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #0f172a;")
+        self._audio_banner = QLabel()
+        self._audio_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._audio_banner.setWordWrap(True)
+        self._audio_banner.setStyleSheet(self._banner_style("#fef3c7", "#92400e", "#f59e0b"))
+        self._audio_banner.hide()
         self._state_label = QLabel()
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._recording_label = QLabel()
@@ -125,6 +131,7 @@ class MainWindow(QMainWindow):
         self._canvas.sample_recorded.connect(self._handle_sample_recorded)
         self._canvas.trial_finished.connect(self._handle_trial_finished)
         self._canvas.trial_cancelled.connect(self._handle_trial_cancelled)
+        self._recorder.audio_status_changed.connect(self._update_audio_banner)
 
         # --- LAYOUT HEADER ---
         status_block = QWidget()
@@ -133,6 +140,7 @@ class MainWindow(QMainWindow):
         status_block_layout.setContentsMargins(0, 10, 0, 8)
         status_block_layout.setSpacing(4)
         status_block_layout.addWidget(self._move_label)
+        status_block_layout.addWidget(self._audio_banner)
 
         badges_layout = QHBoxLayout()
         badges_layout.setContentsMargins(0, 0, 0, 0)
@@ -158,6 +166,7 @@ class MainWindow(QMainWindow):
         )
         self._session_widget.setLayout(session_layout)
         self._session_widget.hide()
+        self._canvas.setEnabled(False)
 
         # --- LAYOUT SETUP (Initial Screen) ---
         setup_inner_container = QWidget()
@@ -259,8 +268,8 @@ class MainWindow(QMainWindow):
         self._session_started = True
         self._setup_widget.hide()
         self._session_widget.show()
+        self._update_audio_banner(self._recorder.audio_status, self._recorder.audio_status_message)
         self._update_session_text()
-        self.load_next_trial()
 
     def _stop_session(self) -> None:
         if not self._session_started:
@@ -269,11 +278,15 @@ class MainWindow(QMainWindow):
         self._next_move_timer.stop()
         self._pending_moves.clear()
         self._session_started = False
+        self._audio_ready_for_moves = False
         self._set_current_move(None)
         self._recorder.finish_session(time.time())
+        self._canvas.setEnabled(False)
         self._session_label.setText("Recorded 0")
         self._session_label.setStyleSheet(self._badge_style("#ecfccb", "#3f6212"))
         self._sync_stop_button_size()
+        self._audio_banner.hide()
+        self._audio_banner.clear()
         self._setup_widget.show()
         self._session_widget.hide()
         self._subject_input.clear()
@@ -305,7 +318,7 @@ class MainWindow(QMainWindow):
             self._next_move_timer.start(self.RETRY_DELAY_MS)
 
     def _advance_session(self) -> None:
-        if not self._session_started:
+        if not self._session_started or not self._audio_ready_for_moves:
             return
         if self._current_move is None:
             self.load_next_trial()
@@ -327,6 +340,18 @@ class MainWindow(QMainWindow):
             self._session_label.setText(f"Recorded {len(trials)}")
         self._session_label.setStyleSheet(self._badge_style("#ecfccb", "#3f6212"))
         self._sync_stop_button_size()
+
+    @staticmethod
+    def _banner_style(background: str, foreground: str, border: str) -> str:
+        return (
+            "font-size: 12px;"
+            "font-weight: 600;"
+            "padding: 8px 12px;"
+            "border-radius: 10px;"
+            f"background-color: {background};"
+            f"color: {foreground};"
+            f"border: 1px solid {border};"
+        )
 
     @staticmethod
     def _badge_style(background: str, foreground: str) -> str:
@@ -366,40 +391,82 @@ class MainWindow(QMainWindow):
         self._stop_button.setFixedWidth(max(56, badge_size.width()))
         self._stop_button.setFixedHeight(max(24, badge_size.height()))
 
+    def _update_audio_banner(self, status: str, message: str) -> None:
+        self._update_audio_gate(status)
+        show_warning = self._session_started and status == "warning" and bool(message)
+        if show_warning:
+            self._audio_banner.setText(message)
+            self._audio_banner.show()
+        else:
+            self._audio_banner.hide()
+            self._audio_banner.clear()
+        self._update_state_text(self._canvas.trial_state)
+
+    def _update_audio_gate(self, status: str) -> None:
+        audio_ready = self._session_started and status == "ok"
+        if audio_ready == self._audio_ready_for_moves:
+            return
+
+        self._audio_ready_for_moves = audio_ready
+        self._canvas.setEnabled(audio_ready)
+
+        if audio_ready:
+            if self._current_move is None:
+                self.load_next_trial()
+            return
+
+        self._next_move_timer.stop()
+        if self._session_started:
+            self._pending_moves.clear()
+            self._recorder.cancel_trial()
+        self._set_current_move(None)
+
     def _state_presentation(self, state: str) -> tuple[str, str, str, str]:
         if state == "active":
             return (
                 "State ACTIVE",
                 self._badge_style("#dcfce7", "#166534"),
-                "Recording ON",
-                self._badge_style("#16a34a", "#ffffff"),
+                *self._recording_presentation(),
             )
         if state == "finished":
             return (
                 "Recorded",
                 self._badge_style("#dcfce7", "#166534"),
-                "Recording OFF",
-                self._badge_style("#e2e8f0", "#334155"),
+                *self._recording_presentation(),
             )
         if state == "invalid":
             return (
                 "State INVALID",
                 self._badge_style("#fee2e2", "#b91c1c"),
-                "Recording OFF",
-                self._badge_style("#e2e8f0", "#334155"),
+                *self._recording_presentation(),
             )
         if state == "incomplete":
             return (
                 "State INCOMPLETE",
                 self._badge_style("#fef3c7", "#92400e"),
-                "Recording OFF",
-                self._badge_style("#e2e8f0", "#334155"),
+                *self._recording_presentation(),
             )
         return (
             "State WAITING",
             self._badge_style("#f1f5f9", "#475569"),
-            "Recording OFF",
-            self._badge_style("#e2e8f0", "#334155"),
+            *self._recording_presentation(),
+        )
+
+    def _recording_presentation(self) -> tuple[str, str]:
+        status = self._recorder.audio_status
+        if status == "ok":
+            return (
+                "Audio ON",
+                self._badge_style("#16a34a", "#ffffff"),
+            )
+        if status == "starting":
+            return (
+                "Audio STARTING",
+                self._badge_style("#fef3c7", "#92400e"),
+            )
+        return (
+            "Audio OFF",
+            self._badge_style("#fee2e2", "#b91c1c"),
         )
 
     def closeEvent(self, event) -> None:
