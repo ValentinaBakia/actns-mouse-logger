@@ -4,6 +4,7 @@ from PySide6.QtGui import QGuiApplication, QShortcut, QKeySequence
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -52,35 +53,30 @@ class MainWindow(QMainWindow):
         self._next_move_timer.setSingleShot(True)
         self._next_move_timer.timeout.connect(self._advance_session)
 
-        #2. 100% SCREEN-RELATED CALCULATIONS
-        header_offset = win_h * 0.08 
-        
-        canvas_area_w = win_w
-        canvas_area_h = win_h - header_offset
-
-        active_size = min(canvas_area_w, canvas_area_h) * 0.80
-
-        c_left = (canvas_area_w - active_size) / 2
-        c_top = (canvas_area_h - active_size) / 2
+        canvas_area_w = float(win_w)
+        canvas_area_h = float(win_h)
+        # Keep the task area almost edge-to-edge, but leave a tiny safety
+        # margin so the corner squares stay fully visible.
+        edge_inset = max(4.0, min(canvas_area_w, canvas_area_h) * 0.004)
 
         self._canvas = DrawingCanvas(
             DrawingConfig(
-                left=c_left,
-                top=c_top,
-                width=active_size,
-                height=active_size,
-                target_size=active_size * 0.23,     
-                target_hit_size=active_size * 0.27,
+                left=edge_inset,
+                top=edge_inset,
+                # These dimensions describe the usable drawing region, not a
+                # fixed design-time rectangle, so the canvas stays responsive.
+                width=canvas_area_w - (edge_inset * 2),
+                height=canvas_area_h - (edge_inset * 2),
             )
         )
 
         self._canvas.setMinimumSize(100, 100)
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(640, 480)
 
         # --- Initialize Label and Input ---
         self._move_label = QLabel()
         self._move_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._move_label.setStyleSheet("font-size: 16px; font-weight: 600; color: #0f172a;")
+        self._move_label.setStyleSheet("font-size: 12px; font-weight: 700; color: #0f172a;")
         self._state_label = QLabel()
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._recording_label = QLabel()
@@ -108,23 +104,46 @@ class MainWindow(QMainWindow):
         self._canvas.trial_cancelled.connect(self._handle_trial_cancelled)
 
         # --- LAYOUT HEADER ---
-        header_layout = QHBoxLayout()
-        header_layout.addWidget(self._move_label, stretch=1)
-        header_layout.addWidget(self._state_label, stretch=1)
-        header_layout.addWidget(self._recording_label, stretch=1)
-        header_layout.addWidget(self._session_label, stretch=1)
+        status_block = QWidget()
+        # Make the floating status overlay ignore mouse events so it never
+        # blocks movement near the top of the screen.
+        status_block.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        status_block.setStyleSheet("background: transparent;")
+        status_block_layout = QVBoxLayout()
+        status_block_layout.setContentsMargins(0, 10, 0, 0)
+        status_block_layout.setSpacing(4)
+        status_block_layout.addWidget(self._move_label)
+
+        badges_layout = QHBoxLayout()
+        badges_layout.setContentsMargins(0, 0, 0, 0)
+        badges_layout.setSpacing(8)
+        badges_layout.addWidget(self._state_label)
+        badges_layout.addWidget(self._recording_label)
+        badges_layout.addWidget(self._session_label)
+        status_block_layout.addLayout(badges_layout)
+        status_block.setLayout(status_block_layout)
 
         # --- LAYOUT SESSION ---
         self._session_widget = QWidget()
-        session_layout = QVBoxLayout()
-        session_layout.setContentsMargins(0, 5, 0, 0) 
-        session_layout.addLayout(header_layout)
-        session_layout.addWidget(self._canvas, stretch=1) 
+        session_layout = QGridLayout()
+        session_layout.setContentsMargins(0, 0, 0, 0)
+        session_layout.setSpacing(0)
+        # The status block is layered on top of the canvas instead of taking up
+        # its own row, so the movement area can use the full screen height.
+        session_layout.addWidget(self._canvas, 0, 0)
+        session_layout.addWidget(
+            status_block,
+            0,
+            0,
+            alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
+        )
         self._session_widget.setLayout(session_layout)
         self._session_widget.hide()
 
         # --- LAYOUT SETUP (Initial Screen) ---
         setup_inner_container = QWidget()
+        # Keep the setup step narrow and centered so the session screen can
+        # remain visually simple once data collection starts.
         setup_inner_container.setFixedWidth(400) 
         setup_inner_layout = QVBoxLayout(setup_inner_container)
         setup_inner_layout.addWidget(self._subject_label)
@@ -141,7 +160,8 @@ class MainWindow(QMainWindow):
         root_layout = QVBoxLayout()
         root_layout.addWidget(self._setup_widget)
         root_layout.addWidget(self._session_widget)
-        root_layout.setContentsMargins(0, 5, 0, 0) 
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
         container.setLayout(root_layout)
         self.setCentralWidget(container)
 
@@ -168,7 +188,9 @@ class MainWindow(QMainWindow):
 
     def _set_current_move(self, move: DirectedMove) -> None:
         self._current_move = move
-        self._move_label.setText(f"Move {move.label}")
+        # The move label was simplified to the raw direction so participants
+        # see only the essential cue, without extra wording.
+        self._move_label.setText(f"{move.label}")
         self._canvas.set_current_move(move)
 
     def _start_session(self) -> None:
@@ -235,10 +257,12 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _badge_style(background: str, foreground: str) -> str:
         return (
-            "font-size: 14px;"
+            # These compact pill badges keep recording/session state visible
+            # without competing too much with the movement targets.
+            "font-size: 11px;"
             "font-weight: 600;"
-            "padding: 6px 12px;"
-            "border-radius: 10px;"
+            "padding: 4px 8px;"
+            "border-radius: 999px;"
             f"background-color: {background};"
             f"color: {foreground};"
         )
