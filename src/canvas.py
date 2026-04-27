@@ -217,12 +217,65 @@ class DrawingCanvas(QWidget):
             return base_rect.adjusted(0, 0, margin, margin)
 
     def _corner_hit(self, position: QPointF) -> str | None:
+        if self._current_move is None:
+            return None
+            
         active_rect = self._active_rect()
-        for anchor_name, point in self._anchor_points().items():
-            del point
-            target_rect = self._activation_zone_rect(anchor_name, active_rect)
-            if target_rect.contains(position):
+        base_size = self._config.target_size_for_rect(active_rect)
+        
+        # Usiamo le stesse identiche misure del disegno visivo
+        arm_length = base_size * 2.5 
+        thickness = 45.0
+        
+        # Tolleranza invisibile di 15 pixel attorno alle linee
+        tol = 15.0 
+
+        # Determiniamo il tipo di movimento della mossa corrente
+        move_type = "diagonal"
+        start = self._current_move.start_anchor
+        end = self._current_move.end_anchor
+        if start[0] == end[0]:
+            move_type = "horizontal"
+        elif start[1] == end[1]:
+            move_type = "vertical"
+
+        # Controlliamo ESCLUSIVAMENTE gli angoli di partenza e arrivo (gli altri non esistono visivamente)
+        for anchor_name in [start, end]:
+            rect_horizontal = None
+            rect_vertical = None
+
+            if anchor_name == "TL":
+                rect_horizontal = QRectF(active_rect.left(), active_rect.top(), arm_length, thickness)
+                rect_vertical = QRectF(active_rect.left(), active_rect.top(), thickness, arm_length)
+            elif anchor_name == "TR":
+                rect_horizontal = QRectF(active_rect.right() - arm_length, active_rect.top(), arm_length, thickness)
+                rect_vertical = QRectF(active_rect.right() - thickness, active_rect.top(), thickness, arm_length)
+            elif anchor_name == "BL":
+                rect_horizontal = QRectF(active_rect.left(), active_rect.bottom() - thickness, arm_length, thickness)
+                rect_vertical = QRectF(active_rect.left(), active_rect.bottom() - arm_length, thickness, arm_length)
+            elif anchor_name == "BR":
+                rect_horizontal = QRectF(active_rect.right() - arm_length, active_rect.bottom() - thickness, arm_length, thickness)
+                rect_vertical = QRectF(active_rect.right() - thickness, active_rect.bottom() - arm_length, thickness, arm_length)
+
+            # Espandiamo le forme del margine di tolleranza
+            rect_horizontal = rect_horizontal.adjusted(-tol, -tol, tol, tol)
+            rect_vertical = rect_vertical.adjusted(-tol, -tol, tol, tol)
+
+            # Verifichiamo se il mouse tocca esattamente la forma richiesta per questa mossa
+            hit = False
+            if move_type == "diagonal":
+                if rect_horizontal.contains(position) or rect_vertical.contains(position):
+                    hit = True
+            elif move_type == "horizontal":
+                if rect_vertical.contains(position):
+                    hit = True
+            elif move_type == "vertical":
+                if rect_horizontal.contains(position):
+                    hit = True
+
+            if hit:
                 return anchor_name
+
         return None
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
