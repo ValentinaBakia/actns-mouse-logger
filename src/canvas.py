@@ -223,55 +223,43 @@ class DrawingCanvas(QWidget):
         active_rect = self._active_rect()
         base_size = self._config.target_size_for_rect(active_rect)
         
-        # Usiamo le stesse identiche misure del disegno visivo
         arm_length = base_size * 2.5 
         thickness = 45.0
         
-        # Tolleranza invisibile di 15 pixel attorno alle linee
+        # Margine piccolo e uniforme. Devi toccare davvero la forma disegnata.
         tol = 15.0 
 
-        # Determiniamo il tipo di movimento della mossa corrente
         move_type = "diagonal"
         start = self._current_move.start_anchor
         end = self._current_move.end_anchor
-        if start[0] == end[0]:
-            move_type = "horizontal"
-        elif start[1] == end[1]:
-            move_type = "vertical"
+        if start[0] == end[0]: move_type = "horizontal"
+        elif start[1] == end[1]: move_type = "vertical"
 
-        # Controlliamo ESCLUSIVAMENTE gli angoli di partenza e arrivo (gli altri non esistono visivamente)
         for anchor_name in [start, end]:
-            rect_horizontal = None
-            rect_vertical = None
-
             if anchor_name == "TL":
-                rect_horizontal = QRectF(active_rect.left(), active_rect.top(), arm_length, thickness)
-                rect_vertical = QRectF(active_rect.left(), active_rect.top(), thickness, arm_length)
+                rect_h = QRectF(active_rect.left(), active_rect.top(), arm_length, thickness)
+                rect_v = QRectF(active_rect.left(), active_rect.top(), thickness, arm_length)
             elif anchor_name == "TR":
-                rect_horizontal = QRectF(active_rect.right() - arm_length, active_rect.top(), arm_length, thickness)
-                rect_vertical = QRectF(active_rect.right() - thickness, active_rect.top(), thickness, arm_length)
+                rect_h = QRectF(active_rect.right() - arm_length, active_rect.top(), arm_length, thickness)
+                rect_v = QRectF(active_rect.right() - thickness, active_rect.top(), thickness, arm_length)
             elif anchor_name == "BL":
-                rect_horizontal = QRectF(active_rect.left(), active_rect.bottom() - thickness, arm_length, thickness)
-                rect_vertical = QRectF(active_rect.left(), active_rect.bottom() - arm_length, thickness, arm_length)
+                rect_h = QRectF(active_rect.left(), active_rect.bottom() - thickness, arm_length, thickness)
+                rect_v = QRectF(active_rect.left(), active_rect.bottom() - arm_length, thickness, arm_length)
             elif anchor_name == "BR":
-                rect_horizontal = QRectF(active_rect.right() - arm_length, active_rect.bottom() - thickness, arm_length, thickness)
-                rect_vertical = QRectF(active_rect.right() - thickness, active_rect.bottom() - arm_length, thickness, arm_length)
+                rect_h = QRectF(active_rect.right() - arm_length, active_rect.bottom() - thickness, arm_length, thickness)
+                rect_v = QRectF(active_rect.right() - thickness, active_rect.bottom() - arm_length, thickness, arm_length)
 
-            # Espandiamo le forme del margine di tolleranza
-            rect_horizontal = rect_horizontal.adjusted(-tol, -tol, tol, tol)
-            rect_vertical = rect_vertical.adjusted(-tol, -tol, tol, tol)
+            # Espandiamo uniformemente la forma del piccolo margine di tolleranza
+            rect_h = rect_h.adjusted(-tol, -tol, tol, tol)
+            rect_v = rect_v.adjusted(-tol, -tol, tol, tol)
 
-            # Verifichiamo se il mouse tocca esattamente la forma richiesta per questa mossa
             hit = False
             if move_type == "diagonal":
-                if rect_horizontal.contains(position) or rect_vertical.contains(position):
-                    hit = True
+                if rect_h.contains(position) or rect_v.contains(position): hit = True
             elif move_type == "horizontal":
-                if rect_vertical.contains(position):
-                    hit = True
+                if rect_v.contains(position): hit = True
             elif move_type == "vertical":
-                if rect_horizontal.contains(position):
-                    hit = True
+                if rect_h.contains(position): hit = True
 
             if hit:
                 return anchor_name
@@ -283,37 +271,40 @@ class DrawingCanvas(QWidget):
             super().mouseMoveEvent(event)
             return
 
-        position = event.position()
+        # Limitiamo le coordinate LOGICAMENTE ai bordi esatti del canvas.
+        # Questo risolve il problema degli spigoli in alto e a sinistra senza 
+        # creare conflitti con il sistema operativo o il Mac.
+        raw_pos = event.position()
+        x = max(0.0, min(raw_pos.x(), float(self.width() - 1)))
+        y = max(0.0, min(raw_pos.y(), float(self.height() - 1)))
+        position = QPointF(x, y)
+
         hit_anchor = self._corner_hit(position)
+        current_timestamp = time.time()
 
         if self._trial_state == self.WAITING:
             if hit_anchor == self._current_move.start_anchor:
-                timestamp = time.time()
-                # Logging begins here: no samples are emitted before the user
-                # actually enters the correct start anchor.
-                self.trial_started.emit(self._current_move, timestamp)
-                self.sample_recorded.emit(timestamp, position.x(), position.y())
+                self._active_trial_start_time = current_timestamp
+                self.trial_started.emit(self._current_move, current_timestamp)
+                self.sample_recorded.emit(current_timestamp, position.x(), position.y())
                 self._set_trial_state(self.ACTIVE)
             super().mouseMoveEvent(event)
             return
 
-        if self._trial_state != self.ACTIVE:
-            super().mouseMoveEvent(event)
-            return
+        if self._trial_state == self.ACTIVE:
+            elapsed_time = current_timestamp - getattr(self, "_active_trial_start_time", current_timestamp)
 
-        timestamp = time.time()
-        # During ACTIVE, every mouse move produces one logged sample.
-        self.sample_recorded.emit(timestamp, position.x(), position.y())
-        
-        if hit_anchor == self._current_move.end_anchor:
-            elapsed_time = timestamp - getattr(self, "_active_trial_start_time", timestamp)
-            
-            if elapsed_time > 4.0:
+            # Controllo immediato e spietato del tempo: se supera 1 secondo, invalida la mossa
+            if elapsed_time > 3.0:
                 self.trial_cancelled.emit()
                 self._end_active_trial(self.INVALID)
-            else:
+                return 
+
+            self.sample_recorded.emit(current_timestamp, position.x(), position.y())
+            
+            if hit_anchor == self._current_move.end_anchor:
                 self._end_active_trial(self.FINISHED)
-                
+
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
