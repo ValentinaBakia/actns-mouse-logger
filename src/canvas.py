@@ -224,16 +224,11 @@ class DrawingCanvas(QWidget):
         base_size = self._config.target_size_for_rect(active_rect)
         
         arm_length = base_size * 2.5 
-        thickness = 45.0
-        
-        # Margine piccolo e uniforme. Devi toccare davvero la forma disegnata.
+        thickness = 75.0
         tol = 15.0 
 
-        move_type = "diagonal"
         start = self._current_move.start_anchor
         end = self._current_move.end_anchor
-        if start[0] == end[0]: move_type = "horizontal"
-        elif start[1] == end[1]: move_type = "vertical"
 
         for anchor_name in [start, end]:
             if anchor_name == "TL":
@@ -253,15 +248,8 @@ class DrawingCanvas(QWidget):
             rect_h = rect_h.adjusted(-tol, -tol, tol, tol)
             rect_v = rect_v.adjusted(-tol, -tol, tol, tol)
 
-            hit = False
-            if move_type == "diagonal":
-                if rect_h.contains(position) or rect_v.contains(position): hit = True
-            elif move_type == "horizontal":
-                if rect_v.contains(position): hit = True
-            elif move_type == "vertical":
-                if rect_h.contains(position): hit = True
-
-            if hit:
+            # Controlliamo la collisione su ENTRAMBI i bracci dell'angolo
+            if rect_h.contains(position) or rect_v.contains(position):
                 return anchor_name
 
         return None
@@ -319,14 +307,13 @@ class DrawingCanvas(QWidget):
         anchor_name: str,
         color: QColor,
     ) -> None:
-        # 1. Capiamo se l'angolo che stiamo valutando ORA è coinvolto nella mossa
+        # Capiamo se l'angolo che stiamo valutando ORA è coinvolto nella mossa
         is_active_target = False
         if self._current_move:
             if anchor_name == self._current_move.start_anchor or anchor_name == self._current_move.end_anchor:
                 is_active_target = True
 
-        # Se non è il punto di partenza né quello di arrivo, usciamo subito:
-        # in questo modo non viene disegnato assolutamente nulla.
+        # Se non è il punto di partenza né quello di arrivo, non disegniamo nulla
         if not is_active_target:
             return
 
@@ -337,41 +324,19 @@ class DrawingCanvas(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(color)
 
-        # 2. Determiniamo il tipo di movimento della mossa corrente
-        move_type = "diagonal"
-        if self._current_move:
-            start = self._current_move.start_anchor
-            end = self._current_move.end_anchor
-            if start[0] == end[0]:
-                move_type = "horizontal"
-            elif start[1] == end[1]:
-                move_type = "vertical"
-
-        # 3. Definiamo i due rettangoli per il corner corrente
-        rect_horizontal = None
-        rect_vertical = None
-
+        # Disegniamo SEMPRE entrambi i rettangoli per formare l'angolo completo
         if anchor_name == "TL":
-            rect_horizontal = QRectF(active_rect.left(), active_rect.top(), arm_length, thickness)
-            rect_vertical = QRectF(active_rect.left(), active_rect.top(), thickness, arm_length)
+            painter.drawRect(QRectF(active_rect.left(), active_rect.top(), arm_length, thickness))
+            painter.drawRect(QRectF(active_rect.left(), active_rect.top(), thickness, arm_length))
         elif anchor_name == "TR":
-            rect_horizontal = QRectF(active_rect.right() - arm_length, active_rect.top(), arm_length, thickness)
-            rect_vertical = QRectF(active_rect.right() - thickness, active_rect.top(), thickness, arm_length)
+            painter.drawRect(QRectF(active_rect.right() - arm_length, active_rect.top(), arm_length, thickness))
+            painter.drawRect(QRectF(active_rect.right() - thickness, active_rect.top(), thickness, arm_length))
         elif anchor_name == "BL":
-            rect_horizontal = QRectF(active_rect.left(), active_rect.bottom() - thickness, arm_length, thickness)
-            rect_vertical = QRectF(active_rect.left(), active_rect.bottom() - arm_length, thickness, arm_length)
+            painter.drawRect(QRectF(active_rect.left(), active_rect.bottom() - thickness, arm_length, thickness))
+            painter.drawRect(QRectF(active_rect.left(), active_rect.bottom() - arm_length, thickness, arm_length))
         elif anchor_name == "BR":
-            rect_horizontal = QRectF(active_rect.right() - arm_length, active_rect.bottom() - thickness, arm_length, thickness)
-            rect_vertical = QRectF(active_rect.right() - thickness, active_rect.bottom() - arm_length, thickness, arm_length)
-
-        # 4. Disegniamo la forma in base al tipo di mossa
-        if move_type == "diagonal":
-            painter.drawRect(rect_horizontal)
-            painter.drawRect(rect_vertical)
-        elif move_type == "horizontal":
-            painter.drawRect(rect_vertical)
-        elif move_type == "vertical":
-            painter.drawRect(rect_horizontal)
+            painter.drawRect(QRectF(active_rect.right() - arm_length, active_rect.bottom() - thickness, arm_length, thickness))
+            painter.drawRect(QRectF(active_rect.right() - thickness, active_rect.bottom() - arm_length, thickness, arm_length))
 
     def _draw_reference_diagonals(self, painter: QPainter) -> None:
         # Keep the old diagonal guidance, but in a very light style so it does
